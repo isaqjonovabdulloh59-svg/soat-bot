@@ -28,10 +28,11 @@ from telethon.errors import (
 )
 
 # ================= ASOSIY SOZLAMALAR =================
-BOT_TOKEN = "8817958511:AAF6VJWPiwjSlsy9nefL2SbqVXGvpq5PG1I"
+# Token va ma'lumotlar environment (muhit) o'zgaruvchilaridan olinadi
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8817958511:AAF6VJWPiwjSlsy9nefL2SbqVXGvpq5PG1I")
 
-API_ID = 27309538
-API_HASH = "a728b10f5fe73b9d2eec290147f7c74c"
+API_ID = int(os.environ.get("API_ID", 27309538))
+API_HASH = os.environ.get("API_HASH", "a728b10f5fe73b9d2eec290147f7c74c")
 
 CARD_NUMBER = "9860606758705960"
 CARD_OWNER = "Muxiddinova V"
@@ -259,7 +260,18 @@ async def start_user_clock(user_id, client):
         try:
             u_data = get_user_data(user_id)
             
-            if u_data.get("plan") != "Free" and u_data.get("plan_expire") != "Mavjud emas":
+            # Agar Free foydalanuvchi bo'lib qolsa yoki vaqti tugasa to'xtatamiz
+            if u_data.get("plan") == "Free":
+                active_clocks.pop(user_id, None)
+                u_data["clock_active"] = False
+                save_db(db)
+                try:
+                    await bot.send_message(user_id, "⚠️ Sizning tarivingiz 'Free'. Profil soati faqat pullik (Standard, Plus, Premium) tariflardagi foydalanuvchilar uchun ishlaydi. Iltimos, tarif sotib oling!")
+                except Exception:
+                    pass
+                break
+            
+            if u_data.get("plan_expire") != "Mavjud emas":
                 try:
                     exp_dt = datetime.strptime(u_data.get("plan_expire"), "%Y-%m-%d %H:%M:%S")
                     exp_dt = exp_dt.replace(tzinfo=TASHKENT_TZ)
@@ -267,6 +279,14 @@ async def start_user_clock(user_id, client):
                         u_data["plan"] = "Free"
                         u_data["plan_expire"] = "Mavjud emas"
                         save_db(db)
+                        active_clocks.pop(user_id, None)
+                        u_data["clock_active"] = False
+                        save_db(db)
+                        try:
+                            await bot.send_message(user_id, "⏰ Tarifingiz muddati tugadi va soat to'xtatildi. Davom etish uchun tarifni yangilang.")
+                        except Exception:
+                            pass
+                        break
                 except Exception:
                     pass
 
@@ -368,9 +388,6 @@ async def start_user_clock(user_id, client):
                     wday = DAYS_OF_WEEK_UZ[qh_dt.weekday()]
                     extra_bio.append(f"🕌 Qurbon hayiti ({wday}): {days}k {hours%24}s | Namoz: {namoz_time}")
 
-            if u_data.get("plan") == "Free":
-                extra_bio.append("✨ @tmclock_bot")
-
             final_bio = f"{clean_bio} " + " | ".join(extra_bio) if extra_bio else clean_bio
 
             await client(
@@ -464,7 +481,6 @@ async def admin_add_balance_cmd(message: types.Message):
         await message.answer("ℹ️ Foydalanish: <code>/3 &lt;user_id&gt; &lt;summa&gt;</code>", parse_mode="HTML")
 
 
-# ── AKALARIMNING BALANSINI NOL QILISH UCHUN BUYRUQ ──
 @dp.message(F.text.startswith("/setzero"))
 async def admin_set_zero_cmd(message: types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -868,7 +884,7 @@ async def process_nick_generation(message: types.Message, state: FSMContext):
             trans = str.maketrans("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", "𝐚𝐛𝐜𝐝𝐞𝐟𝐠𝐡𝐢𝑗𝐤𝐥𝐦𝐧𝐨𝐩𝐪𝑟𝑠𝐭𝑢𝑣𝑤𝐱𝑦𝐳𝐀𝐁𝐶𝐃𝐄𝐅𝐆𝐇𝐈𝐉𝐊𝐋𝐌𝐍𝐎𝐏𝐐𝐑𝐒𝐓𝐔𝐕𝐖𝐗𝐘𝐙𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗")
             return txt.translate(trans)
         elif mode == "sans":
-            trans = str.maketrans("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", "𝖺𝖻𝖼𝖽𝖾𝖿𝗀𝗁𝗂𝗃𝗄𝗅𝗆𝗇𝗈𝗉𝗊𝗋𝗌𝗍𝗎𝗏𝗐𝗑𝗒𝗓𝖠𝖡𝖢𝖣𝖤𝖥𝖦𝖧𝖨𝖩𝖪𝖫𝖬𝖭𝖮𝖯𝖰𝖱𝖲𝖳𝖴𝖵𝖶𝖷𝖸𝖹𝟎𝟙𝟚𝟛𝟜𝟝𝟞𝟟𝟠𝟡")
+            trans = str.maketrans("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", "𝖺𝖻𝖼𝖽𝖾𝖿𝗀𝗁𝗂𝗃𝗄𝗅𝗆𝗇𝗈𝗉𝗊𝗋𝗌𝗍𝗎𝗏𝗐𝗑𝗒𝗓𝖠𝖡𝖢𝖣𝖤𝖥𝖦𝖧𝖨𝖩𝖪𝖫𝖬𝖭𝖮𝖯𝗰𝖱𝖲𝖳𝖴𝖵𝖶𝖷𝖸𝖹𝟎𝟙𝟚𝟛𝟜𝟝𝟞𝟟𝟠𝟡")
             return txt.translate(trans)
         elif mode == "italic":
             trans = str.maketrans("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", "𝑎𝑏𝑐𝑑𝑒𝑓𝑔ℎ𝑖𝑗𝑘𝑙𝑚𝑛𝑜𝑝𝑞𝑟𝑠𝑡𝑢𝑣𝑤𝑥𝑦𝑧𝐴𝐵𝐶𝐷𝐸𝐹𝐺𝐻𝐼𝐽𝐾𝐿𝑀𝑁𝑂𝑃𝑄𝑅𝑆𝑇𝑈𝑉𝑊𝑋𝑌𝑍")
@@ -937,7 +953,7 @@ async def tariffs_menu(message: types.Message):
         "📌 Tarif: 🔰 Free\n"
         "💰 Narxi: 0 so'm / oy\n"
         "✨ Imkoniyatlar:\n"
-        "> Profil soat: ✅\n\n"
+        "> Profil soat: ❌ (Faqat pullik tariflarda)\n\n"
         "📌 Tarif: ⏰ Standard\n"
         "💰 Narxi: 4,000 so'm / oy\n"
         "✨ Imkoniyatlar:\n"
@@ -1024,6 +1040,27 @@ async def go_topup_cb(call: types.CallbackQuery, state: FSMContext):
 @dp.message(F.text == "Soat Sozlamalari ⚙️")
 async def clock_settings(message: types.Message):
     user_id = message.from_user.id
+    u_data = get_user_data(user_id)
+
+    # 🛑 FAQAT PULLIK TARIFDAGILAR UCHUN TEKSHIRUV
+    if u_data.get("plan") == "Free":
+        text = (
+            "⚠️ <b>Diqqat! Free (tekin) tarifdagi foydalanuvchilar soat funksiyasidan foydalana olmaydi.</b>\n\n"
+            "Profil soatini yoqish uchun quyidagi pullik tariflardan birini tanlang:\n"
+            "• ⏰ Standard — 4,000 so'm / oy\n"
+            "• ✨ Plus — 7,000 so'm / oy\n"
+            "• ⭐️ Premium — 13,000 so'm / oy\n\n"
+            "Tarif sotib olish uchun quyidagi tugmani bosing:"
+        )
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🛍 Tariflarni ko'rish", callback_data="open_tariffs_menu")],
+                [InlineKeyboardButton(text="💰 Hisobni to'ldirish", callback_data="go_topup")]
+            ]
+        )
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
+        return
+
     if user_id in active_clocks:
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -1050,24 +1087,14 @@ async def clock_settings(message: types.Message):
         text = (
             "🕒 Soat o'rnatish qo'llanmasi va foydalanish shartlari\n\n"
             "📌 Shartlar\n"
-            "1. Agar siz tekin tarifdan foydalanayotgan bo'lsangiz, bot avtomatik ravishda profil bioingizga reklama qo'shadi.\n"
-            "2. Agar reklamasiz soat qo'yishni xohlasangiz, pullik tariflardan birini tanlashingiz kerak. Batafsil ma'lumotni Tariflar bo'limidan olishingiz mumkin.\n\n"
+            "1. Profil soatidan foydalanish faqat pullik tarif egalari uchun amal qiladi.\n"
+            "2. Batafsil ma'lumotni Tariflar bo'limidan olishingiz mumkin.\n\n"
             "📖 O'rnatish qo'llanmasi\n"
             "1. 📞 Telefon raqamni yuborish tugmasini bosing va raqamingizni botga yuboring.\n"
             "2. Sizning Telegram akkauntingizga 5 xonali kod keladi. Uni botga nuqtalar bilan yuborishingiz kerak:\n"
             "   - Masalan: agar kod 12345 bo'lsa → 12.345 yoki 123.45.\n"
-            "   - ⚠️ Sabab: kodni oddiy holatda yuborsangiz, u darhol yaroqsiz bo'lib qoladi. Shuning uchun kodni nuqta bilan ajratib yuborish majburiy.\n"
             "3. Agar akkauntingizda 2 bosqichli parol yoqilgan bo'lsa, uni ham botga yuboring.\n"
-            "4. Shundan so'ng, 1 daqiqa ichida profilingizda avtomatik soat paydo bo'ladi.\n\n"
-            "⚙️ Qanday ishlaydi?\n"
-            "- Bot har daqiqada sizning profil familiyangizni (Last name) joriy vaqt bilan yangilab turadi.\n"
-            "- Natijada familiya qismida doimiy ravishda soat ko'rinib turadi.\n\n"
-            "🔒 Xavfsizlik\n"
-            "- Sizning akkauntingiz 100% xavfsiz.\n"
-            "- Telefon raqam, kod va parollar faqat qayta ishlash va bot orqali soat o'rnatish uchun ishlatiladi.\n"
-            "- Hech qanday ma'lumotlar uchinchi shaxslarga berilmaydi.\n"
-            "- Bot sizning akkauntingizdan hech qanday shaxsiy ma'lumotni tashqariga chiqarmaydi.\n"
-            "- Foydalanuvchi ma'lumotlari maxfiy saqlanadi va faqat soat funksiyasi uchun ishlatiladi."
+            "4. Shundan so'ng, 1 daqiqa ichida profilingizda avtomatik soat paydo bo'ladi."
         )
         clock_menu = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -1081,8 +1108,34 @@ async def clock_settings(message: types.Message):
         await message.answer(text, reply_markup=clock_menu)
 
 
+@dp.callback_query(F.data == "open_tariffs_menu")
+async def open_tariffs_cb(call: types.CallbackQuery):
+    text = (
+        "📋 Tariflar haqida ma'lumot:\n\n"
+        "📌 Tarif: ⏰ Standard — 4,000 so'm / oy\n"
+        "📌 Tarif: ✨ Plus — 7,000 so'm / oy\n"
+        "📌 Tarif: ⭐️ Premium — 13,000 so'm / oy\n"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="⏰ Standard", callback_data="buy_plan_Standard"),
+                InlineKeyboardButton(text="✨ Plus", callback_data="buy_plan_Plus"),
+            ],
+            [
+                InlineKeyboardButton(text="⭐️ Premium", callback_data="buy_plan_Premium"),
+            ]
+        ]
+    )
+    await call.message.edit_text(text, reply_markup=kb)
+
+
 @dp.callback_query(F.data == "read_rules")
 async def rules_accepted(call: types.CallbackQuery, state: FSMContext):
+    u_data = get_user_data(call.from_user.id)
+    if u_data.get("plan") == "Free":
+        await call.answer("❌ Free tarifidagilar soat o'rnatolmaydi! Avval tarif oling.", show_alert=True)
+        return
     await call.message.delete()
     await state.set_state(ClockSetup.waiting_for_phone)
     await call.message.answer(
@@ -1163,13 +1216,9 @@ async def set_bio_menu_cb(call: types.CallbackQuery):
             ],
         ]
     )
-    
-    info_note = ""
-    if u_data.get("plan") == "Free":
-        info_note = "\n\nℹ️ Biodagi soat funksiyasi Plus ✨ va Premium ⭐️ tariflarida mavjud."
 
     await call.message.edit_text(
-        f"🎨 <b>Biodagi soat sozlamalari</b>\n\n📊 Holat: <i>{status_text}</i>\n🎨 Bio tipi: <i>{bio_type_text}</i>{info_note}",
+        f"🎨 <b>Biodagi soat sozlamalari</b>\n\n📊 Holat: <i>{status_text}</i>\n🎨 Bio tipi: <i>{bio_type_text}</i>",
         reply_markup=kb,
         parse_mode="HTML",
     )
@@ -1527,6 +1576,12 @@ async def process_phone(message: types.Message, state: FSMContext):
         await message.answer("❌ Amal bekor qilindi.", reply_markup=main_menu)
         return
 
+    u_data = get_user_data(message.from_user.id)
+    if u_data.get("plan") == "Free":
+        await state.clear()
+        await message.answer("❌ Free tarifidagilar soat o'rnatolmaydi!", reply_markup=main_menu)
+        return
+
     phone = message.contact.phone_number if message.contact else message.text
     phone = re.sub(r"[^\d+]", "", phone)
 
@@ -1668,6 +1723,12 @@ async def process_password(message: types.Message, state: FSMContext):
 async def resume_active_clocks():
     for str_id, u_data in db.items():
         if u_data.get("clock_active", False):
+            # Agar Free bo'lsa tiklamaslik
+            if u_data.get("plan") == "Free":
+                u_data["clock_active"] = False
+                save_db(db)
+                continue
+
             user_id = int(str_id)
             session_path = f"sessions/user_{user_id}.session"
             if os.path.exists(session_path) or os.path.exists(f"sessions/user_{user_id}"):
