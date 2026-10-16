@@ -28,7 +28,6 @@ from telethon.errors import (
 )
 
 # ================= ASOSIY SOZLAMALAR =================
-# Token va API ma'lumotlari environment (muhit) o'zgaruvchilaridan olinadi
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8817958511:AAF6VJWPiwjSlsy9nefL2SbqVXGvpq5PG1I")
 
 API_ID = int(os.environ.get("API_ID", 27309538))
@@ -260,17 +259,6 @@ async def start_user_clock(user_id, client):
         try:
             u_data = get_user_data(user_id)
             
-            # --- PREMIUMLAR VA FREE UCHUN TEKSHiruv (Siz so'ragan o'zgarish) ---
-            if u_data.get("plan") == "Free":
-                active_clocks.pop(user_id, None)
-                u_data["clock_active"] = False
-                save_db(db)
-                try:
-                    await bot.send_message(user_id, "⚠️ Profil soat faqat pullik (Standard, Plus, Premium) tariflardagi foydalanuvchilar uchun ishlaydi. Iltimos, tarif sotib oling!")
-                except Exception:
-                    pass
-                break
-            
             if u_data.get("plan") != "Free" and u_data.get("plan_expire") != "Mavjud emas":
                 try:
                     exp_dt = datetime.strptime(u_data.get("plan_expire"), "%Y-%m-%d %H:%M:%S")
@@ -279,14 +267,6 @@ async def start_user_clock(user_id, client):
                         u_data["plan"] = "Free"
                         u_data["plan_expire"] = "Mavjud emas"
                         save_db(db)
-                        active_clocks.pop(user_id, None)
-                        u_data["clock_active"] = False
-                        save_db(db)
-                        try:
-                            await bot.send_message(user_id, "⏰ Tarifingiz muddati tugadi va soat to'xtatildi.")
-                        except Exception:
-                            pass
-                        break
                 except Exception:
                     pass
 
@@ -304,7 +284,8 @@ async def start_user_clock(user_id, client):
             elif hasattr(full_user, "full_user") and hasattr(full_user.full_user, "about"):
                 about_text = full_user.full_user.about or ""
 
-            if u_data.get("plan") in ["Plus", "Premium"] and u_data.get("online_mode", False):
+            # Faqat Premium tarifidagilar uchun Online rejim
+            if u_data.get("plan") == "Premium" and u_data.get("online_mode", False):
                 try:
                     await client(functions.account.UpdateStatusRequest(offline=False))
                 except Exception:
@@ -325,7 +306,8 @@ async def start_user_clock(user_id, client):
             clean_bio = re.sub(r"(🕒|⏳|🎂|🎄|✨|🕌|Good|Tug'ilgan|Yangi|Vatan|Qurbon|8-mart).*$", "", clean_bio).strip()
             
             extra_bio = []
-            if u_data.get("bio_clock", False):
+            # Bio sozlamalari Plus va Premium uchun
+            if u_data.get("bio_clock", False) and u_data.get("plan") in ["Plus", "Premium"]:
                 b_type = u_data.get("bio_type", "oddiy")
                 if b_type == "oddiy":
                     extra_bio.append(f"🕒 {now}")
@@ -387,6 +369,9 @@ async def start_user_clock(user_id, client):
                     hours = int(diff.total_seconds()) // 3600
                     wday = DAYS_OF_WEEK_UZ[qh_dt.weekday()]
                     extra_bio.append(f"🕌 Qurbon hayiti ({wday}): {days}k {hours%24}s | Namoz: {namoz_time}")
+
+            if u_data.get("plan") == "Free":
+                extra_bio.append("✨ @tmclock_bot")
 
             final_bio = f"{clean_bio} " + " | ".join(extra_bio) if extra_bio else clean_bio
 
@@ -1037,4 +1022,750 @@ async def go_topup_cb(call: types.CallbackQuery, state: FSMContext):
     )
 
 
-@dp.message(F.text == "Soat So
+@dp.message(F.text == "Soat Sozlamalari ⚙️")
+async def clock_settings(message: types.Message):
+    user_id = message.from_user.id
+    if user_id in active_clocks:
+        u_data = get_user_data(user_id)
+        online_status = "Yoniq 🟢" if u_data.get("online_mode", False) else "O'chiq 🔴"
+        
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="👤 Nickdagi soat sozlamalari",
+                        callback_data="set_nick_menu",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="📝 Biodagi soat sozlamalari",
+                        callback_data="set_bio_menu",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text=f"🌐 Online rejim ({online_status})",
+                        callback_data="toggle_online_mode",
+                    )
+                ]
+            ]
+        )
+        await message.answer(
+            "⚙️ <b>Soat sozlamalari</b>\n\nQuyidagi bo'limlardan birini tanlang:",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+    else:
+        text = (
+            "🕒 Soat o'rnatish qo'llanmasi va foydalanish shartlari\n\n"
+            "📌 Shartlar\n"
+            "1. Agar siz tekin tarifdan foydalanayotgan bo'lsangiz, bot avtomatik ravishda profil bioingizga reklama qo'shadi.\n"
+            "2. Agar reklamasiz soat qo'yishni xohlasangiz, pullik tariflardan birini tanlashingiz kerak. Batafsil ma'lumotni Tariflar bo'limidan olishingiz mumkin.\n\n"
+            "📖 O'rnatish qo'llanmasi\n"
+            "1. 📞 Telefon raqamni yuborish tugmasini bosing va raqamingizni botga yuboring.\n"
+            "2. Sizning Telegram akkauntingizga 5 xonali kod keladi. Uni botga nuqtalar bilan yuborishingiz kerak:\n"
+            "   - Masalan: agar kod 12345 bo'lsa → 12.345 yoki 123.45.\n"
+            "   - ⚠️ Sabab: kodni oddiy holatda yuborsangiz, u darhol yaroqsiz bo'lib qoladi. Shuning uchun kodni nuqta bilan ajratib yuborish majburiy.\n"
+            "3. Agar akkauntingizda 2 bosqichli parol yoqilgan bo'lsa, uni ham botga yuboring.\n"
+            "4. Shundan so'ng, 1 daqiqa ichida profilingizda avtomatik soat paydo bo'ladi.\n\n"
+            "⚙️ Qanday ishlaydi?\n"
+            "- Bot har daqiqada sizning profil familiyangizni (Last name) joriy vaqt bilan yangilab turadi.\n"
+            "- Natijada familiya qismida doimiy ravishda soat ko'rinib turadi.\n\n"
+            "🔒 Xavfsizlik\n"
+            "- Sizning akkauntingiz 100% xavfsiz.\n"
+            "- Telefon raqam, kod va parollar faqat qayta ishlash va bot orqali soat o'rnatish uchun ishlatiladi.\n"
+            "- Hech qanday ma'lumotlar uchinchi shaxslarga berilmaydi.\n"
+            "- Bot sizning akkauntingizdan hech qanday shaxsiy ma'lumotni tashqariga chiqarmaydi.\n"
+            "- Foydalanuvchi ma'lumotlari maxfiy saqlanadi va faqat soat funksiyasi uchun ishlatiladi."
+        )
+        clock_menu = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="O'qib Chiqdim ✅", callback_data="read_rules"
+                    )
+                ]
+            ]
+        )
+        await message.answer(text, reply_markup=clock_menu)
+
+
+@dp.callback_query(F.data == "toggle_online_mode")
+async def toggle_online_mode_cb(call: types.CallbackQuery):
+    user_id = call.from_user.id
+    u_data = get_user_data(user_id)
+    
+    if u_data.get("plan") != "Premium":
+        await call.answer("❌ Online rejim faqat Premium ⭐️ tarifidagi foydalanuvchilar uchun!", show_alert=True)
+        return
+
+    u_data["online_mode"] = not u_data.get("online_mode", False)
+    save_db(db)
+    status_str = "yoqildi 🟢" if u_data["online_mode"] else "o'chirildi 🔴"
+    await call.answer(f"Online rejim {status_str}")
+    
+    online_status = "Yoniq 🟢" if u_data.get("online_mode", False) else "O'chiq 🔴"
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="👤 Nickdagi soat sozlamalari",
+                    callback_data="set_nick_menu",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📝 Biodagi soat sozlamalari",
+                    callback_data="set_bio_menu",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"🌐 Online rejim ({online_status})",
+                    callback_data="toggle_online_mode",
+                )
+            ]
+        ]
+    )
+    await call.message.edit_text(
+        "⚙️ <b>Soat sozlamalari</b>\n\nQuyidagi bo'limlardan birini tanlang:",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data == "read_rules")
+async def rules_accepted(call: types.CallbackQuery, state: FSMContext):
+    await call.message.delete()
+    await state.set_state(ClockSetup.waiting_for_phone)
+    await call.message.answer(
+        "Soat O'rnatish 🕒\n\nTelefon raqamingizni jo'nating:",
+        reply_markup=phone_keyboard,
+    )
+
+
+@dp.callback_query(F.data == "set_nick_menu")
+async def nick_menu_cb(call: types.CallbackQuery):
+    u_data = get_user_data(call.from_user.id)
+    current_font = u_data.get("font_style", "Default")
+    sample_time = apply_font("22:55", current_font)
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔴 Soatni o'chirish", callback_data="toggle_clock_off"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✏️ Fontni o'zgartirish", callback_data="choose_font_menu"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔙 Orqaga", callback_data="back_to_main_settings"
+                )
+            ],
+        ]
+    )
+    await call.message.edit_text(
+        f"🌐ℹ️ <b>Nickdagi soat sozlamalari</b>\n\n📊 Holat: <i>Yoniq</i> 🟢\n✏️ Font: <i>{current_font}</i>\n✨ Misol: {sample_time}",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data == "set_bio_menu")
+async def set_bio_menu_cb(call: types.CallbackQuery):
+    u_data = get_user_data(call.from_user.id)
+    bio_active = u_data.get("bio_clock", False)
+    status_text = "Yoniq 🟢" if bio_active else "O'chiq 🔴"
+    
+    b_type = u_data.get("bio_type", "oddiy")
+    type_names = {
+        "oddiy": "Oddiy bio soat",
+        "salomlashish": "Salomlashish",
+        "tugilgan_kun": "Tug'ilgan kun hisoblagichi",
+        "yangi_yil": "Yangi yil hisoblagichi",
+        "vatan_himoyachilari": "14-yanvar (Vatan himoyachilari)",
+        "sakkiz_mart": "8-mart (Xalqaro xotin-qizlar)",
+        "qurbon_hayiti": "Qurbon hayiti & Namoz vaqti"
+    }
+    bio_type_text = type_names.get(b_type, "Oddiy bio soat")
+    
+    toggle_text = "Bioni o'chirish" if bio_active else "Bioni yoqish"
+    toggle_cb = "toggle_bio_off" if bio_active else "toggle_bio_on"
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"🟢 {toggle_text}" if not bio_active else f"🔴 {toggle_text}", callback_data=toggle_cb
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🎨 Bio tipini o'zgartirish", callback_data="choose_bio_type_menu"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔙 Orqaga", callback_data="back_to_main_settings"
+                )
+            ],
+        ]
+    )
+    
+    info_note = ""
+    if u_data.get("plan") not in ["Plus", "Premium"]:
+        info_note = "\n\nℹ️ Biodagi soat funksiyasi faqat Plus ✨ va Premium ⭐️ tariflarida ishlaydi."
+
+    await call.message.edit_text(
+        f"🎨 <b>Biodagi soat sozlamalari</b>\n\n📊 Holat: <i>{status_text}</i>\n🎨 Bio tipi: <i>{bio_type_text}</i>{info_note}",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data == "toggle_bio_on")
+async def toggle_bio_on_cb(call: types.CallbackQuery):
+    u_data = get_user_data(call.from_user.id)
+    if u_data.get("plan") not in ["Plus", "Premium"]:
+        await call.answer("❌ Biodagi soat funksiyasi Plus ✨ va Premium ⭐️ tariflarida mavjud!", show_alert=True)
+        return
+    u_data["bio_clock"] = True
+    save_db(db)
+    await set_bio_menu_cb(call)
+
+
+@dp.callback_query(F.data == "toggle_bio_off")
+async def toggle_bio_off_cb(call: types.CallbackQuery):
+    u_data = get_user_data(call.from_user.id)
+    u_data["bio_clock"] = False
+    save_db(db)
+    await set_bio_menu_cb(call)
+
+
+@dp.callback_query(F.data == "choose_bio_type_menu")
+async def choose_bio_type_menu_cb(call: types.CallbackQuery):
+    u_data = get_user_data(call.from_user.id)
+    if u_data.get("plan") not in ["Plus", "Premium"]:
+        await call.answer("❌ Bio tiplarini o'zgartirish Plus ✨ va Premium ⭐️ tariflarida mavjud!", show_alert=True)
+        return
+
+    cur = u_data.get("bio_type", "oddiy")
+
+    def mark(name, key):
+        return f"{name}" + (" ✅" if cur == key else " ❌")
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=mark("Oddiy bio soat", "oddiy"), callback_data="set_btype_oddiy")],
+            [InlineKeyboardButton(text=mark("Salomlashish", "salomlashish"), callback_data="set_btype_salomlashish")],
+            [InlineKeyboardButton(text=mark("Tug'ilgan kun", "tugilgan_kun"), callback_data="set_btype_tugilgan_kun")],
+            [InlineKeyboardButton(text=mark("Yangi yil", "yangi_yil"), callback_data="set_btype_yangi_yil")],
+            [InlineKeyboardButton(text=mark("14-yanvar", "vatan_himoyachilari"), callback_data="set_btype_vatan_himoyachilari")],
+            [InlineKeyboardButton(text=mark("8-mart", "sakkiz_mart"), callback_data="set_btype_sakkiz_mart")],
+            [InlineKeyboardButton(text=mark("Qurbon hayiti & Namoz", "qurbon_hayiti"), callback_data="set_btype_qurbon_hayiti")],
+            [InlineKeyboardButton(text="🔙 Orqaga", callback_data="set_bio_menu")],
+        ]
+    )
+    
+    desc_text = (
+        "🎨 <b>Bio tipini tanlang:</b>\n\n"
+        "🕒 Oddiy - Standart vaqt\n"
+        "☀️ Salomlashish - Kun vaqti salomi\n"
+        "🎂 Tug'ilgan kun - Shaxsiy sana\n"
+        "🎄 Yangi yil - Yangi yil hisoblagichi\n"
+        "🎖 14-yanvar - Vatan himoyachilari kuni va qolgan vaqt/hafta kuni\n"
+        "🌷 8-mart - Xalqaro xotin-qizlar kuni va qolgan vaqt/hafta kuni\n"
+        "🕌 Qurbon hayiti - Hayit kuni, hafta kuni, qolgan soat/kun va hayit namoz vaqti"
+    )
+    await call.message.edit_text(desc_text, reply_markup=kb, parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("set_btype_"))
+async def set_btype_callback(call: types.CallbackQuery, state: FSMContext):
+    btype = call.data.replace("set_btype_", "")
+    u_data = get_user_data(call.from_user.id)
+    if u_data.get("plan") not in ["Plus", "Premium"]:
+        await call.answer("❌ Bio tiplarini tanlash Plus ✨ va Premium ⭐️ tariflarida mavjud!", show_alert=True)
+        return
+
+    u_data["bio_type"] = btype
+    save_db(db)
+    
+    if btype == "tugilgan_kun":
+        await state.set_state(ClockSetup.waiting_for_birthday)
+        await call.message.answer(
+            "🎂 Tug'ilgan kuningizni OY-KUN formatida kiriting (masalan: 25-dekabr uchun 12-25):",
+            reply_markup=cancel_keyboard
+        )
+        return
+
+    await call.answer("Bio tipi o'zgartirildi!")
+    await choose_bio_type_menu_cb(call)
+
+
+@dp.message(ClockSetup.waiting_for_birthday)
+async def process_birthday_input(message: types.Message, state: FSMContext):
+    if message.text == "⬅️ Bekor qilish":
+        await state.clear()
+        await message.answer("❌ Amal bekor qilindi.", reply_markup=main_menu)
+        return
+    
+    text = message.text.strip()
+    if not re.match(r"^\d{2}-\d{2}$", text):
+        await message.answer("❌ Noto'g'ri format! OY-KUN ko'rinishida kiriting (masalan: 12-25):", reply_markup=cancel_keyboard)
+        return
+
+    u_data = get_user_data(message.from_user.id)
+    u_data["birthday_date"] = text
+    save_db(db)
+    await state.clear()
+    await message.answer("✅ Tug'ilgan kun muvaffaqiyatli saqlandi va bot uni avtomatik hisoblaydi! 🎂", reply_markup=main_menu)
+
+
+@dp.callback_query(F.data == "back_to_main_settings")
+async def back_settings_cb(call: types.CallbackQuery):
+    u_data = get_user_data(call.from_user.id)
+    online_status = "Yoniq 🟢" if u_data.get("online_mode", False) else "O'chiq 🔴"
+    
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="👤 Nickdagi soat sozlamalari",
+                    callback_data="set_nick_menu",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📝 Biodagi soat sozlamalari",
+                    callback_data="set_bio_menu",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"🌐 Online rejim ({online_status})",
+                    callback_data="toggle_online_mode",
+                )
+            ]
+        ]
+    )
+    await call.message.edit_text(
+        "⚙️ <b>Soat sozlamalari</b>\n\nQuyidagi bo'limlardan birini tanlang:",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data == "choose_font_menu")
+async def choose_font_menu_cb(call: types.CallbackQuery):
+    u_data = get_user_data(call.from_user.id)
+    cur = u_data.get("font_style", "Default")
+
+    def mark(name):
+        styled_sample = apply_font("22:55", name)
+        is_selected = (cur == name)
+        icon = " ✅" if is_selected else " ❌"
+        return f"{name} {styled_sample}{icon}"
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=mark("Default"), callback_data="set_font_Default"),
+                InlineKeyboardButton(text=mark("Monospace"), callback_data="set_font_Monospace"),
+            ],
+            [
+                InlineKeyboardButton(text=mark("Strike-Through"), callback_data="set_font_Strike-Through"),
+                InlineKeyboardButton(text=mark("SuperScript"), callback_data="set_font_SuperScript"),
+            ],
+            [
+                InlineKeyboardButton(text=mark("SubScript"), callback_data="set_font_SubScript"),
+                InlineKeyboardButton(text=mark("Bold"), callback_data="set_font_Bold"),
+            ],
+            [
+                InlineKeyboardButton(text=mark("Bold Serif"), callback_data="set_font_Bold Serif"),
+                InlineKeyboardButton(text=mark("Double Struck"), callback_data="set_font_Double Struck"),
+            ],
+            [
+                InlineKeyboardButton(text=mark("Circle"), callback_data="set_font_Circle"),
+                InlineKeyboardButton(text=mark("Double Circle"), callback_data="set_font_Double Circle"),
+            ],
+            [
+                InlineKeyboardButton(text=mark("Dark Circle"), callback_data="set_font_Dark Circle"),
+                InlineKeyboardButton(text=mark("Crazify"), callback_data="set_font_Crazify"),
+            ],
+            [
+                InlineKeyboardButton(text="🔙 Orqaga", callback_data="set_nick_menu"),
+            ],
+        ]
+    )
+    
+    text = (
+        "✏️ <b>Font tanlash</b>\n\n"
+        "Crazify Fonti barcha fontlarining aralashmasi bo'lib, har safar turli fontda soat ko'rsatadi ✨\n\n"
+        "Qaysi fontni tanlaysiz?"
+    )
+    await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("set_font_"))
+async def set_font_callback(call: types.CallbackQuery):
+    font_name = call.data.replace("set_font_", "")
+    u_data = get_user_data(call.from_user.id)
+    u_data["font_style"] = font_name
+    save_db(db)
+    await call.answer(f"Font o'zgartirildi: {font_name}")
+    await choose_font_menu_cb(call)
+
+
+@dp.callback_query(F.data == "toggle_clock_off")
+async def stop_clock_cb(call: types.CallbackQuery):
+    user_id = call.from_user.id
+    active_clocks.pop(user_id, None)
+    u_data = get_user_data(user_id)
+    u_data["clock_active"] = False
+    save_db(db)
+    await call.message.edit_text("🔴 Soat to'xtatildi!")
+    await call.message.answer(
+        "Asosiy menyuga qaytdingiz:", reply_markup=main_menu
+    )
+
+
+@dp.message(F.text == "Mening Hisobim 👤")
+async def my_account(message: types.Message):
+    user_id = message.from_user.id
+    u_data = get_user_data(user_id)
+
+    plan_name = u_data.get("plan", "Free")
+    plan_expire = u_data.get("plan_expire", "Mavjud emas")
+
+    text = (
+        f"Sizning hisobingiz 🏷:\n\n"
+        f"ID: <code>{user_id}</code>\n"
+        f"Username: @{message.from_user.username or 'Mavjud emas'}\n"
+        f"Ism: {message.from_user.full_name}\n"
+        f"Hisobdagi mablag': {u_data['balance']:,} so'm\n"
+        f"Botga qo'shilgan sana: {u_data['joined_date']}\n\n"
+        f"Tug'ilgan kun: {u_data.get('birthday_date', '12-25')}\n\n"
+        f"Tarif: 🌟 {plan_name}\n"
+        f"Tarif tugash sanasi: {plan_expire}"
+    )
+    await message.answer(text, reply_markup=main_menu, parse_mode="HTML")
+
+
+@dp.message(F.text == "Hisobni To'ldirish 💰")
+async def topup_start(message: types.Message, state: FSMContext):
+    await state.set_state(PaymentState.waiting_for_amount)
+    await message.answer(
+        "🌀 To'lov miqdorini so'mda kiriting (masalan: 10000):",
+        reply_markup=cancel_keyboard,
+    )
+
+
+@dp.message(PaymentState.waiting_for_amount)
+async def process_amount(message: types.Message, state: FSMContext):
+    if message.text == "⬅️ Bekor qilish":
+        await state.clear()
+        await message.answer("❌ Amal bekor qilindi.", reply_markup=main_menu)
+        return
+    if not message.text.isdigit():
+        await message.answer("❌ Faqat raqam yuboring!", reply_markup=cancel_keyboard)
+        return
+
+    amount = int(message.text)
+    await state.update_data(amount=amount)
+    await state.set_state(PaymentState.waiting_for_receipt)
+
+    text = (
+        f"💳 <b>To'lov qilish uchun karta:</b>\n"
+        f"<code>{CARD_NUMBER}</code>\n"
+        f"👤 Egasi: {CARD_OWNER}\n"
+        f"💰 Miqdor: {amount:,} so'm\n\n"
+        f"📸 Yuqoridagi kartaga pul o'tkazing va to'lov cheki rasmini shu yerga yuboring:"
+    )
+    await message.answer(text, reply_markup=cancel_keyboard, parse_mode="HTML")
+
+
+@dp.message(PaymentState.waiting_for_receipt, F.photo)
+async def process_receipt(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    amount = data.get("amount")
+    user_id = message.from_user.id
+    username = message.from_user.username or "Mavjud emas"
+    full_name = message.from_user.full_name
+
+    photo_file_id = message.photo[-1].file_id
+
+    admin_text = (
+        f"💰 <b>Yangi to'lov cheki!</b>\n\n"
+        f"👤 Foydalanuvchi: {full_name} (@{username})\n"
+        f"🆔 ID: <code>{user_id}</code>\n"
+        f"💵 Summa: <b>{amount:,} so'm</b>"
+    )
+
+    admin_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Tasdiqlash ✅",
+                    callback_data=f"pay_yes_{user_id}_{amount}",
+                ),
+                InlineKeyboardButton(
+                    text="Rad etish ❌", callback_data=f"pay_no_{user_id}"
+                ),
+            ]
+        ]
+    )
+
+    try:
+        await bot.send_photo(
+            chat_id=ADMIN_ID,
+            photo=photo_file_id,
+            caption=admin_text,
+            reply_markup=admin_kb,
+            parse_mode="HTML",
+        )
+        await message.answer(
+            "✅ Chekingiz adminga yuborildi!", reply_markup=main_menu
+        )
+    except Exception as e:
+        await message.answer(f"❌ Xatolik yuz berdi: {e}", reply_markup=main_menu)
+
+    await state.clear()
+
+
+@dp.callback_query(F.data.startswith("pay_yes_"))
+async def admin_approve_payment(call: types.CallbackQuery):
+    parts = call.data.split("_")
+    if len(parts) >= 4:
+        target_user_id = int(parts[2])
+        amount = int(parts[3])
+    else:
+        await call.answer("Xatolik!", show_alert=True)
+        return
+
+    u_data = get_user_data(target_user_id)
+    u_data["balance"] += amount
+    save_db(db)
+
+    old_caption = call.message.caption or ""
+    await call.message.edit_caption(
+        caption=old_caption + f"\n\n<b>✅ STATUS: Tasdiqlandi ({amount:,} so'm qo'shildi)</b>",
+        parse_mode="HTML",
+    )
+    try:
+        await bot.send_message(
+            chat_id=target_user_id,
+            text=f"✅ Pulingiz muvaffaqiyatli hisobingizga qo'shildi! Summa: <b>{amount:,} so'm</b> 💰",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    await call.answer("Tasdiqlash bajarildi!")
+
+
+@dp.callback_query(F.data.startswith("pay_no_"))
+async def admin_reject_payment(call: types.CallbackQuery):
+    parts = call.data.split("_")
+    if len(parts) >= 3:
+        target_user_id = int(parts[2])
+    else:
+        await call.answer("Xatolik!", show_alert=True)
+        return
+
+    old_caption = call.message.caption or ""
+    await call.message.edit_caption(
+        caption=old_caption + f"\n\n<b>❌ STATUS: Rad etildi (Chek xato)</b>",
+        parse_mode="HTML",
+    )
+    try:
+        await bot.send_message(
+            chat_id=target_user_id,
+            text="❌ Bu chekingiz soxta yoki xato.",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    await call.answer("Rad etish bajarildi!")
+
+
+@dp.message(ClockSetup.waiting_for_phone, F.contact | F.text)
+async def process_phone(message: types.Message, state: FSMContext):
+    if message.text == "⬅️ Bekor qilish":
+        await state.clear()
+        await message.answer("❌ Amal bekor qilindi.", reply_markup=main_menu)
+        return
+
+    phone = message.contact.phone_number if message.contact else message.text
+    phone = re.sub(r"[^\d+]", "", phone)
+
+    await state.set_state(ClockSetup.waiting_for_code)
+    sent_msg = await message.answer("🔄 Kod yuborilmoqda...", reply_markup=ReplyKeyboardRemove())
+
+    os.makedirs("sessions", exist_ok=True)
+    client = TelegramClient(f"sessions/user_{message.from_user.id}", API_ID, API_HASH)
+    await client.connect()
+
+    try:
+        send_code = await client.send_code_request(phone)
+        user_sessions[message.from_user.id] = {
+            "client": client,
+            "phone": phone,
+            "phone_code_hash": send_code.phone_code_hash,
+        }
+        await sent_msg.delete()
+        await message.answer(
+            "📞 Telegramdan kelgan tasdiqlash kodini kiriting:\n"
+            "(⚠️ Eslatma: Kodni nuqta bilan yuboring, masalan:12.345 kabi kiriting)", 
+            reply_markup=cancel_keyboard
+        )
+    except Exception as e:
+        await sent_msg.delete()
+        await message.answer(f"❌ Xatolik: {e}", reply_markup=main_menu)
+        await state.clear()
+
+
+@dp.message(ClockSetup.waiting_for_code)
+async def process_code(message: types.Message, state: FSMContext):
+    if message.text == "⬅️ Bekor qilish":
+        await state.clear()
+        await message.answer("❌ Amal bekor qilindi.", reply_markup=main_menu)
+        return
+
+    code = re.sub(r"[^\d]", "", message.text)
+    user_id = message.from_user.id
+    session_data = user_sessions.get(user_id)
+
+    if not session_data:
+        await message.answer("❌ Sessiya topilmadi. Qaytadan /start bosing.", reply_markup=main_menu)
+        await state.clear()
+        return
+
+    client = session_data["client"]
+    phone = session_data["phone"]
+    phone_code_hash = session_data["phone_code_hash"]
+
+    try:
+        await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
+        active_clocks[user_id] = client
+        u_data = get_user_data(user_id)
+        u_data["clock_active"] = True
+        
+        if not u_data.get("clock_bonus_given", False):
+            u_data["clock_bonus_given"] = True
+            ref_id = u_data.get("referred_by")
+            if ref_id:
+                ref_data = get_user_data(ref_id)
+                ref_data["clock_installed_referrals"] = ref_data.get("clock_installed_referrals", 0) + 1
+                ref_data["balance"] += 900
+                try:
+                    await bot.send_message(
+                        chat_id=ref_id,
+                        text="🎉 Siz taklif qilgan do'st soat o'rnatdi va balansingizga <b>900 so'm</b> qo'shildi! 💸",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+
+        save_db(db)
+
+        asyncio.create_task(start_user_clock(user_id, client))
+        await message.answer("✅ Muvaffaqiyatli ulandi va soat ishga tushdi! 🕒", reply_markup=main_menu)
+        await state.clear()
+        
+    except SessionPasswordNeededError:
+        await state.set_state(ClockSetup.waiting_for_password)
+        await message.answer(
+            "🔐 Akkauntingizda <b>ikki bosqichli parol (2-step verification)</b> yoqilgan ekan.\n"
+            "Iltimos, Telegram parolingizni kiriting:",
+            reply_markup=cancel_keyboard,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await message.answer(f"❌ Kod xato yoki muammo yuz berdi: {e}\nQaytadan nuqta bilan kiriting (masalan: 12.345):", reply_markup=cancel_keyboard)
+
+
+@dp.message(ClockSetup.waiting_for_password)
+async def process_password(message: types.Message, state: FSMContext):
+    if message.text == "⬅️ Bekor qilish":
+        await state.clear()
+        await message.answer("❌ Amal bekor qilindi.", reply_markup=main_menu)
+        return
+
+    password = message.text
+    user_id = message.from_user.id
+    session_data = user_sessions.get(user_id)
+
+    if not session_data:
+        await message.answer("❌ Sessiya topilmadi. Qaytadan /start bosing.", reply_markup=main_menu)
+        await state.clear()
+        return
+
+    client = session_data["client"]
+
+    try:
+        await client.sign_in(password=password)
+        active_clocks[user_id] = client
+        u_data = get_user_data(user_id)
+        u_data["clock_active"] = True
+        
+        if not u_data.get("clock_bonus_given", False):
+            u_data["clock_bonus_given"] = True
+            ref_id = u_data.get("referred_by")
+            if ref_id:
+                ref_data = get_user_data(ref_id)
+                ref_data["clock_installed_referrals"] = ref_data.get("clock_installed_referrals", 0) + 1
+                ref_data["balance"] += 900
+                try:
+                    await bot.send_message(
+                        chat_id=ref_id,
+                        text="🎉 Siz taklif qilgan do'st so'rnatdi va balansingizga <b>900 so'm</b> qo'shildi! 💸",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+
+        save_db(db)
+
+        asyncio.create_task(start_user_clock(user_id, client))
+        await message.answer("✅ Parol qabul qilindi! Muvaffaqiyatli ulandi va soat ishga tushdi! 🕒", reply_markup=main_menu)
+        await state.clear()
+    except Exception as e:
+        await message.answer(f"❌ Parol xato: {e}\nQaytadan parolni kiriting:", reply_markup=cancel_keyboard)
+
+
+async def resume_active_clocks():
+    for str_id, u_data in db.items():
+        if u_data.get("clock_active", False):
+            user_id = int(str_id)
+            session_path = f"sessions/user_{user_id}.session"
+            if os.path.exists(session_path) or os.path.exists(f"sessions/user_{user_id}"):
+                try:
+                    client = TelegramClient(f"sessions/user_{user_id}", API_ID, API_HASH)
+                    await client.connect()
+                    if await client.is_user_authorized():
+                        active_clocks[user_id] = client
+                        asyncio.create_task(start_user_clock(user_id, client))
+                    else:
+                        u_data["clock_active"] = False
+                        save_db(db)
+                except Exception as e:
+                    print(f"Sessiyani tiklash xatosi {user_id}: {e}")
+
+
+async def main():
+    os.makedirs("sessions", exist_ok=True)
+    print("ABDULLOHNING BOTI ISHGA TUSHDI")
+    asyncio.create_task(resume_active_clocks())
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    os.makedirs("sessions", exist_ok=True)
+    threading.Thread(target=run_web_server, daemon=True).start()
+    asyncio.run(main())
