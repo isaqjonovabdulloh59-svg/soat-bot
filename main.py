@@ -368,7 +368,37 @@ phone_keyboard = ReplyKeyboardMarkup(
 )
 
 
+def online_status_text(u_data):
+    """Online rejim holati. Premium bo'lmasa, eskirib qolgan 'yoniq' belgisi avtomatik o'chiriladi."""
+    if u_data.get("online_mode", False) and u_data.get("plan") != "Premium":
+        u_data["online_mode"] = False
+        save_db(db)
+    return "Yoniq 🟢" if u_data.get("online_mode", False) else "O'chiq 🔴"
+
+
+async def keep_online_loop(user_id, client):
+    """Online rejim yoniq bo'lsa, profilni doimo 'online' holatda ushlab turadi (har 20 soniyada)."""
+    while user_id in active_clocks:
+        try:
+            u = get_user_data(user_id)
+            if u.get("plan") == "Premium" and u.get("online_mode", False):
+                if not client.is_connected():
+                    await client.connect()
+                await client(functions.account.UpdateStatusRequest(offline=False))
+        except Exception as e:
+            print(f"Online holat xatosi ({user_id}):", e)
+        await asyncio.sleep(20)
+
+
+online_tasks = {}
+
+
 async def start_user_clock(user_id, client):
+    # Soat qayta ishga tushsa, eski online-ushlagich takrorlanib qolmasligi uchun almashtiramiz
+    old_task = online_tasks.get(user_id)
+    if old_task and not old_task.done():
+        old_task.cancel()
+    online_tasks[user_id] = asyncio.create_task(keep_online_loop(user_id, client))
     while user_id in active_clocks:
         try:
             u_data = get_user_data(user_id)
@@ -380,6 +410,7 @@ async def start_user_clock(user_id, client):
                     if datetime.now(TASHKENT_TZ) > exp_dt:
                         u_data["plan"] = "Free"
                         u_data["plan_expire"] = "Mavjud emas"
+                        u_data["online_mode"] = False
                         save_db(db)
                 except Exception:
                     pass
@@ -1177,7 +1208,7 @@ async def clock_settings(message: types.Message):
     user_id = message.from_user.id
     if user_id in active_clocks:
         u_data = get_user_data(user_id)
-        online_status = "Yoniq 🟢" if u_data.get("online_mode", False) else "O'chiq 🔴"
+        online_status = online_status_text(u_data)
         
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -1247,6 +1278,9 @@ async def toggle_online_mode_cb(call: types.CallbackQuery):
     u_data = get_user_data(user_id)
     
     if u_data.get("plan") != "Premium":
+        if u_data.get("online_mode", False):
+            u_data["online_mode"] = False
+            save_db(db)
         await call.answer("❌ Online rejim faqat Premium ⭐️ tarifidagi foydalanuvchilar uchun!", show_alert=True)
         return
 
@@ -1255,7 +1289,7 @@ async def toggle_online_mode_cb(call: types.CallbackQuery):
     status_str = "yoqildi 🟢" if u_data["online_mode"] else "o'chirildi 🔴"
     await call.answer(f"Online rejim {status_str}")
     
-    online_status = "Yoniq 🟢" if u_data.get("online_mode", False) else "O'chiq 🔴"
+    online_status = online_status_text(u_data)
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -1481,7 +1515,7 @@ async def process_birthday_input(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data == "back_to_main_settings")
 async def back_settings_cb(call: types.CallbackQuery):
     u_data = get_user_data(call.from_user.id)
-    online_status = "Yoniq 🟢" if u_data.get("online_mode", False) else "O'chiq 🔴"
+    online_status = online_status_text(u_data)
     
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
