@@ -28,6 +28,8 @@ from aiogram.types import (
 )
 from telethon import TelegramClient, functions
 from telethon.errors import (
+    PhoneCodeInvalidError,
+    PhoneCodeExpiredError,
     AuthKeyDuplicatedError,
     UserDeactivatedError,
     SessionPasswordNeededError,
@@ -540,8 +542,12 @@ async def admin_restore_from_file(message: types.Message):
         await message.answer(
             f"♻️ Fayldan tiklandi:\n👥 Foydalanuvchilar: {len(db)}\n"
             f"🎟 Promokodlar: {len(promos_db)}\n🕒 Soat sessiyalari: {sess}\n\n"
-            f"Soatlar to'liq ishlashi uchun Render'da botni bir marta Restart qiling."
+            f"🕒 Soatlar qayta yoqilmoqda, Restart shart emas.\n"
+            f"Agar biror soat ishlamasa, o'sha foydalanuvchi soatni qayta ulashi kerak."
         )
+        # Soatlarni darhol ishga tushiramiz va tiklangan ma'lumotni yangi zaxira sifatida pin qilamiz
+        asyncio.create_task(resume_active_clocks())
+        await _do_backup(delay=0, force=True)
     except Exception as e:
         await message.answer(f"❌ Tiklab bo'lmadi: {e}")
 
@@ -1752,6 +1758,13 @@ async def process_phone(message: types.Message, state: FSMContext):
     sent_msg = await message.answer("🔄 Kod yuborilmoqda...", reply_markup=ReplyKeyboardRemove())
 
     os.makedirs("sessions", exist_ok=True)
+    # Oldingi tugallanmagan urinish bo'lsa, uni yopamiz (sessiya fayli band bo'lib qolmasin)
+    old = user_sessions.pop(message.from_user.id, None)
+    if old:
+        try:
+            await old["client"].disconnect()
+        except Exception:
+            pass
     client = TelegramClient(f"sessions/user_{message.from_user.id}", API_ID, API_HASH)
     await client.connect()
 
@@ -1761,28 +1774,53 @@ async def process_phone(message: types.Message, state: FSMContext):
             "client": client,
             "phone": phone,
             "phone_code_hash": send_code.phone_code_hash,
+            "code_len": getattr(getattr(send_code, "type", None), "length", None) or 5,
+            "digits": "",
+            "kp_msg_id": None,
         }
         await sent_msg.delete()
         await message.answer(
-            "📞 Telegramdan kelgan tasdiqlash kodini kiriting:\n"
-            "(⚠️ Eslatma: Kodni nuqta bilan yuboring, masalan:12.345 kabi kiriting)", 
+            "📞 Telegramdan kelgan tasdiqlash kodini kiriting.\n"
+            "Pastdagi raqam tugmalaridan foydalaning (Telegram kodni bloklamaydi).\n"
+            "Xohlasangiz, kodni yozib ham yuborishingiz mumkin: 12345 yoki 12.345",
             reply_markup=cancel_keyboard
         )
+        await send_keypad(message, message.from_user.id)
     except Exception as e:
         await sent_msg.delete()
         await message.answer(f"❌ Xatolik: {e}", reply_markup=main_menu)
         await state.clear()
 
 
-@dp.message(ClockSetup.waiting_for_code)
-async def process_code(message: types.Message, state: FSMContext):
-    if message.text == "⬅️ Bekor qilish":
-        await state.clear()
-        await message.answer("❌ Amal bekor qilindi.", reply_markup=main_menu)
-        return
+def code_keypad_text(sd):
+    n = sd.get("code_len", 5)
+    digits = sd.get("digits", "")
+    shown = " ".join(list(digits) + ["_"] * max(0, n - len(digits)))
+    return f"🔢 <b>Kod:</b>  {shown}\n\nTelegramdan kelgan kodni tugmalar bilan kiriting 👇"
 
-    code = re.sub(r"[^\d]", "", message.text)
-    user_id = message.from_user.id
+
+def code_keypad_markup():
+    def b(text, data):
+        return InlineKeyboardButton(text=text, callback_data=f"kp_{data}")
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [b("1", "1"), b("2", "2"), b("3", "3")],
+        [b("4", "4"), b("5", "5"), b("6", "6")],
+        [b("7", "7"), b("8", "8"), b("9", "9")],
+        [b("⌫", "del"), b("0", "0"), b("✅", "ok")],
+        [b("🔄 Yangi kod", "new"), b("❌ Bekor", "cancel")],
+    ])
+
+
+async def send_keypad(message, user_id):
+    sd = user_sessions.get(user_id)
+    if not sd:
+        return
+    sd["digits"] = ""
+    sent = await message.answer(code_keypad_text(sd), reply_markup=code_keypad_markup(), parse_mode="HTML")
+    sd["kp_msg_id"] = sent.message_id
+
+
+async def do_sign_in(message, state, user_id, code):
     session_data = user_sessions.get(user_id)
 
     if not session_data:
@@ -1791,6 +1829,7 @@ async def process_code(message: types.Message, state: FSMContext):
         return
 
     client = session_data["client"]
+    session_data["digits"] = ""
     phone = session_data["phone"]
     phone_code_hash = session_data["phone_code_hash"]
 
@@ -1830,8 +1869,121 @@ async def process_code(message: types.Message, state: FSMContext):
             reply_markup=cancel_keyboard,
             parse_mode="HTML"
         )
+    except PhoneCodeInvalidError:
+        await message.answer("❌ Kod noto'g'ri. To'g'ri kodni qaytadan yuboring:", reply_markup=cancel_keyboard)
+        await send_keypad(message, user_id)
+    except PhoneCodeExpiredError:
+        # Kod eskirgan yoki Telegram uni bloklagan: avtomatik yangi kod yuboramiz
+        try:
+            if not client.is_connected():
+                await client.connect()
+            new_code = await client.send_code_request(phone)
+            session_data["phone_code_hash"] = new_code.phone_code_hash
+            await message.answer(
+                "⌛ Kod eskirgan yoki Telegram uni bloklagan edi.\n"
+                "📞 Yangi kod yuborildi, uni tugmalar bilan kiriting 👇",
+                reply_markup=cancel_keyboard
+            )
+            await send_keypad(message, user_id)
+        except Exception as e2:
+            await message.answer(f"❌ Yangi kod yuborib bo'lmadi: {e2}\nBekor qilib, qaytadan boshlang.", reply_markup=cancel_keyboard)
     except Exception as e:
-        await message.answer(f"❌ Kod xato yoki muammo yuz berdi: {e}\nQaytadan nuqta bilan kiriting (masalan: 12.345):", reply_markup=cancel_keyboard)
+        # Ulanish uzilgan bo'lsa, qayta ulanamiz va yana urinib ko'rishga ruxsat beramiz
+        try:
+            if not client.is_connected():
+                await client.connect()
+        except Exception:
+            pass
+        await message.answer(f"❌ Kod qabul qilinmadi: {e}\nKodni qaytadan yuboring:", reply_markup=cancel_keyboard)
+        await send_keypad(message, user_id)
+
+
+@dp.message(ClockSetup.waiting_for_code)
+async def process_code(message: types.Message, state: FSMContext):
+    if message.text == "⬅️ Bekor qilish":
+        await state.clear()
+        await message.answer("❌ Amal bekor qilindi.", reply_markup=main_menu)
+        return
+    code = re.sub(r"[^\d]", "", message.text or "")
+    await do_sign_in(message, state, message.from_user.id, code)
+
+
+@dp.callback_query(F.data.startswith("kp_"), ClockSetup.waiting_for_code)
+async def code_keypad_press(call: types.CallbackQuery, state: FSMContext):
+    user_id = call.from_user.id
+    sd = user_sessions.get(user_id)
+    if not sd:
+        await call.answer("Sessiya topilmadi. /start bosing.", show_alert=True)
+        await state.clear()
+        return
+    action = call.data[3:]
+
+    if action == "cancel":
+        await call.answer()
+        old = user_sessions.pop(user_id, None)
+        if old:
+            try:
+                await old["client"].disconnect()
+            except Exception:
+                pass
+        await state.clear()
+        try:
+            await call.message.delete()
+        except Exception:
+            pass
+        await call.message.answer("❌ Amal bekor qilindi.", reply_markup=main_menu)
+        return
+
+    if action == "new":
+        try:
+            client = sd["client"]
+            if not client.is_connected():
+                await client.connect()
+            res = await client.send_code_request(sd["phone"])
+            sd["phone_code_hash"] = res.phone_code_hash
+            sd["digits"] = ""
+            await call.answer("Yangi kod yuborildi ✅")
+            try:
+                await call.message.edit_text(code_keypad_text(sd), reply_markup=code_keypad_markup(), parse_mode="HTML")
+            except Exception:
+                pass
+        except Exception as e:
+            await call.answer(f"Xatolik: {e}"[:190], show_alert=True)
+        return
+
+    submit = False
+    if action == "del":
+        sd["digits"] = sd.get("digits", "")[:-1]
+    elif action == "ok":
+        if len(sd.get("digits", "")) < 4:
+            await call.answer("Kod hali to'liq emas", show_alert=True)
+            return
+        submit = True
+    elif action.isdigit():
+        if len(sd.get("digits", "")) < 8:
+            sd["digits"] = sd.get("digits", "") + action
+        if len(sd["digits"]) >= sd.get("code_len", 5):
+            submit = True
+    await call.answer()
+
+    if submit:
+        code = sd["digits"]
+        try:
+            await call.message.delete()
+        except Exception:
+            pass
+        await do_sign_in(call.message, state, user_id, code)
+        return
+
+    try:
+        await call.message.edit_text(code_keypad_text(sd), reply_markup=code_keypad_markup(), parse_mode="HTML")
+    except Exception:
+        pass
+
+
+@dp.callback_query(F.data.startswith("kp_"))
+async def code_keypad_stale(call: types.CallbackQuery):
+    await call.answer("Bu tugmalar eskirgan. Soatni qaytadan ulang.", show_alert=True)
 
 
 @dp.message(ClockSetup.waiting_for_password)
@@ -1887,6 +2039,8 @@ async def resume_active_clocks():
     for str_id, u_data in db.items():
         if u_data.get("clock_active", False):
             user_id = int(str_id)
+            if user_id in active_clocks:
+                continue
             session_path = f"sessions/user_{user_id}.session"
             if os.path.exists(session_path) or os.path.exists(f"sessions/user_{user_id}"):
                 try:
