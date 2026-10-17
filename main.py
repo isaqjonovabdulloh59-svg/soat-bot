@@ -1,4 +1,9 @@
 import asyncio
+import base64
+import glob
+import hashlib
+import io
+import logging
 from datetime import datetime, timedelta, timezone, date
 import json
 import os
@@ -13,6 +18,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
+    BufferedInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -93,6 +99,7 @@ def save_db(data):
     with db_lock:
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
+    request_backup()
 
 
 def load_promos():
@@ -108,10 +115,115 @@ def load_promos():
 def save_promos(data):
     with open(PROMO_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
+    request_backup()
 
 
 db = load_db()
 promos_db = load_promos()
+
+# ---------- Telegram orqali zaxira (Render deploy/restartda ma'lumot yo'qolmasligi uchun) ----------
+# Bazada o'zgarish bo'lsa, users_db + promokodlar + soat sessiyalari bitta backup.json qilib
+# adminga yuboriladi va pin qilinadi. Bot qayta ishga tushganda baza bo'sh bo'lsa, shundan tiklanadi.
+_backup_scheduled = False
+_last_backup_msg_id = None
+_last_backup_hash = None
+
+def request_backup():
+    global _backup_scheduled
+    if _backup_scheduled:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _backup_scheduled = True
+    loop.create_task(_do_backup())
+
+def _collect_sessions():
+    out = {}
+    for path in glob.glob(os.path.join("sessions", "*.session")):
+        try:
+            with open(path, "rb") as f:
+                out[os.path.basename(path)] = base64.b64encode(f.read()).decode("ascii")
+        except Exception as e:
+            logging.warning(f"Sessiya o'qilmadi {path}: {e}")
+    return out
+
+def _backup_payload():
+    return json.dumps(
+        {"db": db, "promos": promos_db, "sessions": _collect_sessions()},
+        ensure_ascii=False
+    ).encode("utf-8")
+
+async def _do_backup(delay=5, force=False):
+    global _backup_scheduled, _last_backup_msg_id, _last_backup_hash
+    await asyncio.sleep(delay)
+    _backup_scheduled = False
+    try:
+        payload = _backup_payload()
+        digest = hashlib.md5(payload).hexdigest()
+        if digest == _last_backup_hash and not force:
+            return
+        msg = await bot.send_document(
+            ADMIN_ID,
+            BufferedInputFile(payload, filename="backup.json"),
+            caption="💾 Avtomatik zaxira (o'chirmang, bot shu fayldan tiklanadi)",
+            disable_notification=True,
+        )
+        await bot.pin_chat_message(ADMIN_ID, msg.message_id, disable_notification=True)
+        old_id, _last_backup_msg_id = _last_backup_msg_id, msg.message_id
+        _last_backup_hash = digest
+        if old_id:
+            try:
+                await bot.delete_message(ADMIN_ID, old_id)
+            except Exception:
+                pass
+    except Exception as e:
+        logging.error(f"Zaxira yuborilmadi: {e}")
+
+def _apply_backup(data):
+    """Zaxira ma'lumotini xotiraga va diskka (sessiyalar bilan) tiklaydi."""
+    db.clear(); db.update(data.get("db", {}))
+    promos_db.clear(); promos_db.update(data.get("promos", {}))
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(db, f, ensure_ascii=False, indent=4)
+    with open(PROMO_FILE, "w", encoding="utf-8") as f:
+        json.dump(promos_db, f, ensure_ascii=False, indent=4)
+    os.makedirs("sessions", exist_ok=True)
+    count = 0
+    for name, b64 in data.get("sessions", {}).items():
+        safe = os.path.basename(name)
+        if not safe.endswith(".session"):
+            continue
+        with open(os.path.join("sessions", safe), "wb") as f:
+            f.write(base64.b64decode(b64))
+        count += 1
+    return count
+
+async def restore_from_telegram():
+    """Baza bo'sh bo'lsa (yangi deploy), adminning pin qilingan backup.json faylidan tiklaydi."""
+    global _last_backup_msg_id
+    if db:
+        return
+    try:
+        chat = await bot.get_chat(ADMIN_ID)
+        pm = chat.pinned_message
+        if not pm or not pm.document:
+            logging.info("Tiklash uchun zaxira topilmadi.")
+            return
+        f = await bot.get_file(pm.document.file_id)
+        buf = io.BytesIO()
+        await bot.download_file(f.file_path, buf)
+        data = json.loads(buf.getvalue().decode("utf-8"))
+        sess = _apply_backup(data)
+        _last_backup_msg_id = pm.message_id
+        await bot.send_message(
+            ADMIN_ID,
+            f"♻️ Bot qayta ishga tushdi, ma'lumotlar zaxiradan tiklandi:\n"
+            f"👥 Foydalanuvchilar: {len(db)}\n🎟 Promokodlar: {len(promos_db)}\n🕒 Soat sessiyalari: {sess}"
+        )
+    except Exception as e:
+        logging.error(f"Tiklashda xato: {e}")
 
 user_sessions = {}
 active_clocks = {}
@@ -400,6 +512,38 @@ async def start_user_clock(user_id, client):
         if sleep_time <= 0:
             sleep_time = 60
         await asyncio.sleep(sleep_time)
+
+
+@dp.message(F.text == "/backup")
+async def admin_backup_cmd(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await _do_backup(delay=0, force=True)
+    await message.answer("✅ Zaxira yuborildi va pin qilindi.")
+
+
+@dp.message(F.document, F.from_user.id == ADMIN_ID)
+async def admin_restore_from_file(message: types.Message):
+    """Admin backup.json faylini botga yuborsa, ma'lumotlar shundan tiklanadi."""
+    doc = message.document
+    if not (doc.file_name or "").lower().endswith(".json"):
+        return
+    try:
+        f = await bot.get_file(doc.file_id)
+        buf = io.BytesIO()
+        await bot.download_file(f.file_path, buf)
+        data = json.loads(buf.getvalue().decode("utf-8"))
+        if not isinstance(data, dict) or "db" not in data:
+            await message.answer("❌ Bu zaxira (backup.json) fayliga o'xshamaydi.")
+            return
+        sess = _apply_backup(data)
+        await message.answer(
+            f"♻️ Fayldan tiklandi:\n👥 Foydalanuvchilar: {len(db)}\n"
+            f"🎟 Promokodlar: {len(promos_db)}\n🕒 Soat sessiyalari: {sess}\n\n"
+            f"Soatlar to'liq ishlashi uchun Render'da botni bir marta Restart qiling."
+        )
+    except Exception as e:
+        await message.answer(f"❌ Tiklab bo'lmadi: {e}")
 
 
 @dp.message(F.text.startswith("/addpromo"))
@@ -1761,6 +1905,7 @@ async def resume_active_clocks():
 async def main():
     os.makedirs("sessions", exist_ok=True)
     print("ABDULLOHNING BOTI ISHGA TUSHDI")
+    await restore_from_telegram()
     asyncio.create_task(resume_active_clocks())
     await dp.start_polling(bot)
 
